@@ -222,13 +222,28 @@ repmgr_get_primary_node() {
         fi
     else
         if [[ -z "$upstream_host" ]]; then
+
+            info "No upstream detected: primary_host: '${REPMGR_PRIMARY_HOST}:${REPMGR_PRIMARY_PORT}'"
+            info "No upstream detected: primary_node_network_name: '${REPMGR_NODE_NETWORK_NAME}:${REPMGR_PORT_NUMBER}'"
+
             if [[ "${REPMGR_PRIMARY_HOST}:${REPMGR_PRIMARY_PORT}" != "${REPMGR_NODE_NETWORK_NAME}:${REPMGR_PORT_NUMBER}" ]]; then
+
+                info "Primary hosts differences"
+
                 primary_host="$REPMGR_PRIMARY_HOST"
                 primary_port="$REPMGR_PRIMARY_PORT"
             fi
+
+            repmgr_wait_primary_node || repmgr_switchover_standby
+
         else
+
+            info "Upstream detected: primary_host: '${upstream_host}:${upstream_port}'"
+
             primary_host="$upstream_host"
             primary_port="$upstream_port"
+
+
         fi
     fi
 
@@ -236,6 +251,62 @@ repmgr_get_primary_node() {
     echo "$primary_host"
     echo "$primary_port"
 }
+
+
+
+########################
+# switchover standby after long primary wait
+# Globals:
+#   REPMGR_*
+#   POSTGRESQL_*
+# Arguments:
+#   None
+# Returns:
+#   None
+#########################
+
+repmgr_switchover_standby() {
+    local -i timeout="${REPMGR_WAIT_PRIMARY_TIME:-60}"
+
+    primary_host=""
+    primary_port="${REPMGR_PORT_NUMBER}"
+
+    info "Switchover from standby to primary . After unavailable primary for '$timeout' seconds . Assuming the primary role..."
+
+    repmgr_should_promote_standby="$REPMGR_LOCK_DIR/should_promote.lock"
+    echo "promote_me" >> "$repmgr_should_promote_standby"
+
+    info "Should promote to standby '$repmgr_should_promote_standby' "
+
+    [[ -n "$primary_host" ]] && debug "Primary node: '${primary_host}:${primary_port}'"
+    info " Echo primary data "
+    echo "$primary_host"
+    echo "$primary_port"
+}
+
+
+
+########################
+# Standby follow.
+# Globals:
+#   REPMGR_*
+# Arguments:
+#   None
+# Returns:
+#   None
+#########################
+repmgr_standby_promote() {
+    info "Running standby promote..."
+    local -r flags=("standby" "promote" "-f" "$REPMGR_CONF_FILE" "-W" "--log-level" "DEBUG" "--verbose")
+
+    if [[ "$REPMGR_USE_PASSFILE" = "true" ]]; then
+        PGPASSFILE="$REPMGR_PASSFILE_PATH" debug_execute "${REPMGR_BIN_DIR}/repmgr" "${flags[@]}"
+    else
+        PGPASSWORD="$REPMGR_PASSWORD" debug_execute "${REPMGR_BIN_DIR}/repmgr" "${flags[@]}"
+    fi
+
+}
+
 
 ########################
 # Generates env vars for the node
@@ -469,6 +540,7 @@ repmgr_generate_repmgr_config() {
     # set the "--waldir" option accordingly
     local -r waldir=$(postgresql_get_waldir)
     local -r waldir_option=$([[ -n "$waldir" ]] && echo "--waldir=$waldir")
+    local -r randomize=$(( ( RANDOM % 10 )  + 5 ))
 
     cat <<EOF >>"${REPMGR_CONF_FILE}.tmp"
 event_notification_command='${REPMGR_EVENTS_DIR}/router.sh %n %e %s "%t" "%d"'
@@ -485,7 +557,7 @@ failover='automatic'
 promote_command='$(repmgr_get_env_password) repmgr standby promote -f "${REPMGR_CONF_FILE}" --log-level DEBUG --verbose'
 follow_command='$(repmgr_get_env_password) repmgr standby follow -f "${REPMGR_CONF_FILE}" -W --log-level DEBUG --verbose'
 reconnect_attempts='${REPMGR_RECONNECT_ATTEMPTS}'
-reconnect_interval='${REPMGR_RECONNECT_INTERVAL}'
+reconnect_interval=$(expr $randomize + $REPMGR_RECONNECT_INTERVAL 2>/dev/null  || echo "$REPMGR_RECONNECT_INTERVAL")
 log_level='${REPMGR_LOG_LEVEL}'
 priority='${REPMGR_NODE_PRIORITY}'
 degraded_monitoring_timeout='${REPMGR_DEGRADED_MONITORING_TIMEOUT}'
@@ -560,9 +632,11 @@ EOF
 #########################
 repmgr_wait_primary_node() {
     local return_value=1
-    local -i timeout=60
-    local -i step=10
-    local -i max_tries=$((timeout / step))
+    local -i timeout="${REPMGR_WAIT_PRIMARY_TIME:-60}"
+    local -i randomize=$(( ( RANDOM % 10 )  + 1 ))
+    local -i step="${REPMGR_WAIT_PRIMARY_STEP:-10}"
+    local -i tries=$((timeout / step))
+    local -i max_tries=$(( $randomize + $tries  ))
     local schemata
     info "Waiting for primary node..."
     debug "Wait for schema $REPMGR_DATABASE.repmgr on '${REPMGR_CURRENT_PRIMARY_HOST}:${REPMGR_CURRENT_PRIMARY_PORT}', will try $max_tries times with $step delay seconds (TIMEOUT=$timeout)"
@@ -582,6 +656,7 @@ repmgr_wait_primary_node() {
     done
     return $return_value
 }
+
 
 ########################
 # Clones data from primary node
@@ -796,6 +871,13 @@ repmgr_initialize() {
             repmgr_upgrade_extension
         else
             debug "Skipping repmgr configuration..."
+            if [[ -f "$REPMGR_LOCK_DIR/should_promote.lock"  ]] ; then
+                info "Promoting old Standby to Primary"
+                postgresql_start_bg
+                repmgr_standby_promote
+                rm -f "$REPMGR_LOCK_DIR/should_promote.lock"
+            fi
+
         fi
     else
         local -r psql_major_version="$(postgresql_get_major_version)"
