@@ -1,3 +1,4 @@
 FROM docker.io/bitnami/postgresql-repmgr:14.3.0-debian-10-r18
 
+COPY rootfs/opt/bitnami/scripts/postgresql-env.sh /opt/bitnami/scripts/postgresql-env.sh
 COPY rootfs/opt/bitnami/scripts/librepmgr.sh /opt/bitnami/scripts/librepmgr.sh

@@ -224,11 +224,11 @@ repmgr_get_primary_node() {
         if [[ -z "$upstream_host" ]]; then
 
             info "No upstream detected: primary_host: '${REPMGR_PRIMARY_HOST}:${REPMGR_PRIMARY_PORT}'"
-            info "No upstream detected: primary_node_network_name: '${REPMGR_NODE_NETWORK_NAME}:${REPMGR_PORT_NUMBER}'"
+            info "No upstream detected: node_network: '${REPMGR_NODE_NETWORK_NAME}:${REPMGR_PORT_NUMBER}'"
 
             if [[ "${REPMGR_PRIMARY_HOST}:${REPMGR_PRIMARY_PORT}" != "${REPMGR_NODE_NETWORK_NAME}:${REPMGR_PORT_NUMBER}" ]]; then
 
-                info "Primary hosts differences"
+                debug "Primary hosts differences"
 
                 primary_host="$REPMGR_PRIMARY_HOST"
                 primary_port="$REPMGR_PRIMARY_PORT"
@@ -273,13 +273,11 @@ repmgr_switchover_standby() {
 
     info "Switchover from standby to primary . After unavailable primary for '$timeout' seconds . Assuming the primary role..."
 
-    repmgr_should_promote_standby="$REPMGR_LOCK_DIR/should_promote.lock"
-    echo "promote_me" >> "$repmgr_should_promote_standby"
+    echo "promote_me" >> "$REPMGR_PROMOTE_STANDBY_LOCK_FILE_NAME"
 
-    info "Should promote to standby '$repmgr_should_promote_standby' "
+    debug "Marking node to be promoted from standby to primary by writing the following file: '$REPMGR_PROMOTE_STANDBY_LOCK_FILE_NAME' "
 
     [[ -n "$primary_host" ]] && debug "Primary node: '${primary_host}:${primary_port}'"
-    info " Echo primary data "
     echo "$primary_host"
     echo "$primary_port"
 }
@@ -633,7 +631,7 @@ EOF
 repmgr_wait_primary_node() {
     local return_value=1
     local -i timeout="${REPMGR_WAIT_PRIMARY_TIME:-60}"
-    local -i randomize=$(( ( RANDOM % 10 )  + 1 ))
+    local -i randomize=$(( ( RANDOM % 20 )  + 1 ))
     local -i step="${REPMGR_WAIT_PRIMARY_STEP:-10}"
     local -i tries=$((timeout / step))
     local -i max_tries=$(( $randomize + $tries  ))
@@ -871,11 +869,12 @@ repmgr_initialize() {
             repmgr_upgrade_extension
         else
             debug "Skipping repmgr configuration..."
-            if [[ -f "$REPMGR_LOCK_DIR/should_promote.lock"  ]] ; then
+            debug "Checking if node is marked for promotion "
+            if [[ -f "$REPMGR_PROMOTE_STANDBY_LOCK_FILE_NAME"  ]] ; then
                 info "Promoting old Standby to Primary"
                 postgresql_start_bg
                 repmgr_standby_promote
-                rm -f "$REPMGR_LOCK_DIR/should_promote.lock"
+                rm -f "$REPMGR_PROMOTE_STANDBY_LOCK_FILE_NAME"
             fi
 
         fi
