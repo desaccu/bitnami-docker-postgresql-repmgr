@@ -639,6 +639,26 @@ repmgr_wait_primary_node() {
     info "Waiting for primary node..."
     debug "Wait for schema $REPMGR_DATABASE.repmgr on '${REPMGR_CURRENT_PRIMARY_HOST}:${REPMGR_CURRENT_PRIMARY_PORT}', will try $max_tries times with $step delay seconds (TIMEOUT=$timeout)"
     for ((i = 0; i <= timeout; i += step)); do
+
+        if [[ -z "$REPMGR_CURRENT_PRIMARY_HOST" ]] ; then
+          # because primary could be down while standby turn on, so the primary host could not be get from upstream at that momement
+          # asking on each step help to give the primary the opportunity to come back
+          debug "Getting new primary from upstream"
+
+          readarray -t upstream_node < <(repmgr_get_upstream_node)
+          upstream_host=${upstream_node[0]}
+          upstream_port=${upstream_node[1]:-$REPMGR_PRIMARY_PORT}
+
+          if [[ -z "$upstream_host" ]]; then
+            debug "Cannot find a upstream node "
+          else
+            debug "upstream found '$upstream_host'"
+            REPMGR_CURRENT_PRIMARY_HOST=$upstream_host
+            REPMGR_CURRENT_PRIMARY_PORT=$upstream_port
+          fi
+
+        fi
+
         local query="SELECT 1 FROM information_schema.schemata WHERE catalog_name='$REPMGR_DATABASE' AND schema_name='repmgr'"
         if ! schemata="$(echo "$query" | NO_ERRORS=true postgresql_remote_execute "$REPMGR_CURRENT_PRIMARY_HOST" "$REPMGR_CURRENT_PRIMARY_PORT" "$REPMGR_DATABASE" "$REPMGR_USERNAME" "$REPMGR_PASSWORD" "-tA")"; then
             debug "Host '${REPMGR_CURRENT_PRIMARY_HOST}:${REPMGR_CURRENT_PRIMARY_PORT}' is not accessible"
